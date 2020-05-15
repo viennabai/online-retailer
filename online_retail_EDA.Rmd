@@ -1,0 +1,395 @@
+---
+title: "Customer-Centric Analysis of an Online Retailer"
+output: 
+  html_document: 
+    code_folding: hide
+---
+
+### Problem Motivation and Summary of Key Findings 
+
+1. We are an online retailer based in the UK. UK is our primary market, what other countries are our customers in? Should we expand our marketing efforts internationally? If so, where?   
+    + On any given month, international sales account for 9-21% of our total sales
+    + Ireland, Germany, and France account for the highest sales outside of the UK 
+    + Ireland also has the highest spending per customer, making it an attractive target &nbsp;   
+<br/>
+
+2. Product analysis based on 80/20 rule   
+    + 18% of our products account for 80% of our sales
+    + 50% of our products account for nearly all of our sales 
+    + We should look into the range of products, and considering removing a portion that do not contribute to sales  
+<br/>
+
+3. There are products with very high return rates (as high as 50%)  
+
+    + This could indicate quality issues or discrepancy of our product description and customers' expectation 
+    + High return rates leads to unnecessary cost, and should be addressed with the product/marketing teams  
+<br/>
+
+4. Customer analysis based on 80/20 rule  
+
+    + 27% of our customers account for 80% of our sales 
+    + These customers, on average, spend 10x as much as other customers 
+    + Will conduct further cluster analysis  
+ 
+ 
+### Detailed Analysis:    
+```{r, results = 'hide', message=FALSE}
+library(readxl)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(feather)
+library(RColorBrewer)
+library(scales)
+
+data <- read_feather("online_retail.feather")
+
+head(data)
+summary(data)
+str(data)
+data <- rename(data, 'CustomerID' = 'Customer ID')
+data$CustomerID <- as.factor(data$CustomerID)
+
+data <- data %>% 
+  mutate(Type = if_else(Quantity < 0, 'Return', 'Purchase'),
+         Sale = Quantity * Price,
+         Date = parse_date(format(InvoiceDate, '%Y-%m-%d')),
+         Year = format(InvoiceDate, '%Y'),
+         Month = format(InvoiceDate, '%m'),
+         Time = parse_time(format(InvoiceDate, '%H:%M')))
+
+```
+
+### <span style="color:blue"> 1. We are based in the UK. But how much business comes from aboard? </span>
+
+***Q: What percentage of the business is in the UK? ***  
+
+* UK accounts for ~90-95% of all transactions   
+* and 79-91% of all sales  
+
+As expected, a consistently high portion of the transactions come from the UK. However, overseas contribution is not insignificant. In January, it accounted for 20% of sales. Also, on average, international orders tend to be higher in value. 
+
+```{r}
+within_UK <- data %>%
+  mutate(YnM = paste(Year, Month, sep = '-'),
+         is_UK = ifelse(Country == 'United Kingdom', 1, 0)) %>% 
+  group_by(YnM, is_UK) %>% 
+  summarize(n = n(), agg_sales = sum(Sale)) %>% 
+  mutate(prop = n / sum(n),
+         prop_sales = agg_sales / sum(agg_sales)) %>% 
+  filter(is_UK == 1)  
+
+within_UK %>% 
+  ggplot(aes(x = YnM)) +
+  geom_bar(aes(y = prop), stat = 'identity', alpha = 0.8, fill = '#1b9e77') + 
+  geom_bar(aes(y = prop_sales), stat = 'identity', alpha = 0.8, fill = '#7570b3') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(x = 'n-th month', y = 'UK share of transactions')
+
+```
+
+***Q: Which countries outside of the UK have the highest sales? ***   
+
+* EIRE, Germany, France are the top 3
+```{r}
+data %>% 
+  filter(Country != 'United Kingdom') %>% 
+  ggplot(aes(x = Country, y = sum(Sale)/1000000, fill = Type)) +
+  geom_bar(stat = 'identity') +
+  scale_fill_brewer(palette = 'Dark2') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(y = 'Sales (in millions)', x = '')
+```
+
+***Q: Which countries have the highest sales-per-customer?***  
+
+* EIRE stands out, followed by Netherlands, Denmark   
+
+```{r}
+sales_per_cust <- data %>% 
+  group_by(Country) %>% 
+  summarise(n_customers = n_distinct(CustomerID),
+            sales = sum(Sale), 
+            volume = sum(Quantity),
+            orders = n()) %>% 
+  mutate(top_sales = min_rank(desc(sales)),
+         top_volume = min_rank(desc(volume)),
+         top_orders = min_rank(desc(orders)),
+         vol_per_order = volume / orders,
+         sales_per_order = sales / orders,
+         sales_per_customer = sales / n_customers) %>% 
+  arrange(desc(sales_per_customer)) %>% 
+  select(Country, n_customers, sales_per_customer) 
+
+sales_per_cust %>% 
+  filter(n_customers > 1 & sales_per_customer > 2000) %>% 
+  ggplot(aes(x = reorder(Country, -sales_per_customer), y = sales_per_customer)) +
+  geom_bar(stat = 'identity', fill = '#1b9e77') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(x = '', y = 'Sales per customer')
+```
+
+### <span style="color:blue"> 2. Seasonal patterns of sales </span>  
+
+*note: we only have 1 year worth of data, difficult to generalize this pattern*  
+
+***Q: Are there patterns based on time of year or time of day? ***  
+
+* there is higher volume approaching and around end of the year (perhaps) holidays related - higher purchases and lower returns 
+* transactions trend upwards and peaks at around midday; then tapers off gradually 
+
+```{r}
+
+#seasonal trend 
+data %>% 
+  ggplot(aes(x = Date, col = Type)) +
+  geom_freqpoly(bins = 80, size = 1) + 
+  facet_grid(Type~., scales = 'free') +
+  scale_color_brewer(palette = 'Dark2') +
+  theme(legend.position = 'none') +
+  labs(y = 'Transaction volume')
+
+#time of the day trend 
+data %>% 
+  ggplot(aes(x = Time, col = Type))+
+  geom_freqpoly(bins = 80, size = 1) + 
+  facet_grid(Type~., scales = 'free') +
+  scale_color_brewer(palette = 'Dark2') +
+  theme(legend.position = 'none')  +
+  labs(y = 'Transaction volume')
+```
+
+***Before we go any further, we need to address this problem:***   
+
+There are instances where the first order of a customer is a Return (meaning the original purchases are not in our data). These need to be deleted. 
+
+```{r, message=FALSE}
+
+#find instances where the first order by a customer is a Return 
+first_orders <- data %>% 
+  filter(!is.na(CustomerID)) %>% 
+  group_by(CustomerID, InvoiceDate) %>% 
+  summarize(sales = sum(Sale)) %>% 
+  filter(InvoiceDate == first(InvoiceDate),
+         sales < 0) %>% 
+  mutate(first_order_neg = 'Yes') %>% 
+  select(CustomerID, InvoiceDate, first_order_neg)
+first_orders
+
+#join onto the orignal and filter out 
+data <- left_join(data, first_orders, by = c('CustomerID' = 'CustomerID', 'InvoiceDate' = 'InvoiceDate'))
+data <- filter(data, is.na(first_order_neg))
+data$first_order_neg <- NULL
+
+#Let's check again: 
+first_orders <- data %>% 
+  filter(!is.na(CustomerID)) %>% 
+  group_by(CustomerID, InvoiceDate) %>% 
+  summarize(sales = sum(Sale)) %>% 
+  filter(InvoiceDate == first(InvoiceDate),
+         sales < 0) %>% 
+  mutate(first_order_neg = 'Yes') %>% 
+  select(CustomerID, InvoiceDate, first_order_neg)
+data <- left_join(data, first_orders, by = c('CustomerID' = 'CustomerID', 'InvoiceDate' = 'InvoiceDate'))
+data <- filter(data, is.na(first_order_neg))
+data$first_order_neg <- NULL
+
+first_orders <- data %>% 
+  filter(!is.na(CustomerID)) %>% 
+  group_by(CustomerID, InvoiceDate) %>% 
+  summarize(sales = sum(Sale)) %>% 
+  filter(InvoiceDate == first(InvoiceDate),
+         sales < 0) %>% 
+  mutate(first_order_neg = 'Yes') %>% 
+  select(CustomerID, InvoiceDate, first_order_neg)
+data <- left_join(data, first_orders, by = c('CustomerID' = 'CustomerID', 'InvoiceDate' = 'InvoiceDate'))
+data <- filter(data, is.na(first_order_neg))
+data$first_order_neg <- NULL
+
+```
+
+### <span style="color:blue"> 3. 80/20 rule - our products </span>   
+
+The 80/20 rule says that 80% of the results come from 20% of the inputs. In this case, it would imply that 80% of our sales are generated by 20% of our products. Is this true?  
+
+Let's group together our products and take a glimpse 
+
+```{r}
+products <- data %>% 
+  group_by(StockCode) %>% 
+  summarise(sales = sum(Sale), 
+            volume = sum(Quantity),
+            orders = n_distinct(Invoice),
+            cost = sales/volume) %>% 
+  mutate(top_sales = min_rank(desc(sales)),
+         top_volume = min_rank(desc(volume)),
+         top_orders = min_rank(desc(orders))) %>% 
+  arrange(top_sales) 
+
+products[1:10,]
+
+```
+
+*note: StockCode 'M' indicates manual adjustments to the data*   
+
+***Q: What % of products make up 80% of sales?***  
+
+* just 18%!     
+* in fact, 50% of the products account for nearly all of the sales   
+
+Perhaps we need to look at the diversity of our product offerings. If we reduce the number of products, and still retain nearly all of sales, that could lead to lower cost and higher profitability.  
+
+```{r}
+topprod <- products %>% 
+  mutate(temp = 1/dim(products)[1], 
+         cumprod = cumsum(temp),
+         cumsales = cumsum(sales / sum(sales)),
+         top18prod = if_else(cumsales < 0.801, 'yes', 'no')) 
+
+data <- left_join(data, topprod[, c('StockCode', 'top18prod')], by = c('StockCode' = 'StockCode')) 
+
+topprod %>% 
+  ggplot(aes(x = cumprod*100, y = cumsales*100)) + 
+  geom_line(size = 1)+
+  geom_hline(linetype = 'dashed', color = 'red', size = 0.8, yintercept = 80) + 
+  theme(axis.title.x = element_text(size = 14), axis.title.y = element_text(size = 14)) + 
+  labs(y = '% of sales', x = '% of products')
+```
+
+***Q: Are some products more likely to be returned than others?***   
+
+* Here is a list of products where more than 20% of the sales were returned  
+* ex, item '85220', for instance is a 'small fairy cake fridge magnet'; more than 50% of its sales were returned   
+
+We should look into what's going on with these products. Possible porblems could be quality issue, mismatch of website description and customer expectation, etc.  Having high return rate could lead to higher cost and lower profitability. 
+
+
+```{r}
+freq_returns <- data %>% 
+  filter(top18prod == 'yes' & StockCode != 'M') %>% 
+  group_by(StockCode) %>% 
+  summarize(purchased = sum(Sale[Type == 'Purchase']),
+            returned = sum(Sale[Type == 'Return']),
+            prop = -returned / purchased) %>% 
+  filter(prop > 0.2) %>% 
+  arrange(desc(prop)) 
+
+freq_returns
+
+freq_returns %>% 
+  ggplot(aes(x = reorder(StockCode, -prop)))+
+  geom_bar(aes(y = purchased), stat = 'identity') +
+  geom_bar(aes(y = returned), stat = 'identity', fill = 'red') + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(y = 'Sales vs Returned', x = 'Product code')
+
+```
+
+
+### <span style="color:blue"> 4. 80/20 rule - our customers </span>  
+
+The 80/20 rule applied to products, does it also apply to our customeres? 
+
+Let's group the data by customers: 
+ex. for this period of data, customer 18102 generated the most sales for us; the customer made 95 orders: the most recent on Dec 09
+
+```{r}
+customers <- data %>% 
+  filter(!is.na(CustomerID)) %>% ##there are missing values in CustomerID 
+  group_by(CustomerID) %>% 
+  summarise(sales = sum(Sale), 
+            volume = sum(Quantity),
+            orders = n_distinct(Invoice),
+            first_order = first(Date),
+            last_order = last(Date)) %>% 
+  mutate(rank_sales = min_rank(desc(sales)),
+         rank_volume = min_rank(desc(volume)),
+         rank_orders = min_rank(desc(orders))) %>% 
+  arrange(rank_sales) %>% 
+  select(CustomerID, sales, orders, first_order, last_order, rank_sales, rank_orders)
+
+customers[1:10,]
+
+```
+
+***Q: What % of customers make up 80% of sales?***  
+  
+* around 27% 
+
+```{r}
+#top 27% of the customers generated 80% of the sales 
+topcust <- customers %>% 
+  mutate(temp = 1/dim(customers)[1], 
+         cumcustomers = cumsum(temp),
+         cumsales = cumsum(sales / sum(sales)),
+         top27cust = if_else(cumsales < 0.801, 'yes', 'no')) 
+#top25cust = if_else(cumsales<0.205, 'yes', 'no')) 
+
+data <- left_join(data, topcust[, c('CustomerID', 'top27cust')], by = c('CustomerID' = 'CustomerID')) 
+
+topcust %>% 
+  ggplot(aes(x = cumcustomers*100, y = cumsales*100)) + 
+  geom_line(size = 1)+
+  geom_hline(linetype = 'dashed', color = 'red', size = 0.8, yintercept = 80) + 
+  theme(axis.title.x = element_text(size = 14), axis.title.y = element_text(size = 14)) + 
+  labs(y = '% of sales', x = '% of customers')
+```
+
+***Q: Where do the top 27% of the customers come from?***   
+  
+Almost 90% are from the UK, followed by Germany and France 
+
+```{r}
+data %>% 
+  filter(top27cust == 'yes') %>% 
+  group_by(Country) %>% 
+  summarize(n_cust = n_distinct(CustomerID)) %>% 
+  arrange(desc(n_cust)) %>% 
+  mutate(prop = round(n_cust / sum(n_cust), 2))
+```
+
+***Q: How often do they shop? And how much do they spend?***   
+
+* on average, the top 27% customers spent 10x as much as the rest of our customers 
+
+```{r}
+a <- data %>% 
+  filter(top27cust == 'yes') %>% 
+  summarize(avg_sales = round(sum(Sale) / n_distinct(CustomerID)),
+            avg_n_orders = round(n_distinct(Invoice) / n_distinct(CustomerID))) 
+
+b <- data %>% 
+  filter(top27cust == 'no') %>%
+  summarize(avg_sales = round(sum(Sale) / n_distinct(CustomerID)),
+            avg_n_orders = round(n_distinct(Invoice) / n_distinct(CustomerID)))
+
+
+c <- as.data.frame(rbind(a,b))
+row.names(c) <- c('top27', 'others')
+c
+
+```
+
+
+### <span style="color:blue"> 5. RFM - Recency, Frequency, and Monetary </span>    
+
+We saw from the analysis above that a quarter of our customers accounted for 80% of the sales. We can calculate the RFM of each customer and proceed with K-means clustering to identify segments and generating customer-centric business intelligence.   
+
+*note: will exclude customers with negative Monetary value; they are caused unexplained Manual adjustments*
+```{r}
+today <- last(data$Date)
+RFM <- customers %>% 
+  transmute(CustomerID, 
+            Recency = as.numeric(today-last_order),
+            Frequency = orders,
+            Monetary = sales)  %>% 
+  filter(Monetary > 0)
+  
+RFM
+write_feather(RFM, "data_RFM.feather")
+```
+
+
+
+
+
